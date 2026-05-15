@@ -650,11 +650,10 @@ pipeline {
                                         return
                                     }
                                     
-                                    def projectKey = PROJECT_KEYS.readLines()
+                                    def keyLine = PROJECT_KEYS.readLines()
                                         .collect { it.trim() }
                                         .find { it.startsWith("${module}:") }
-                                        ?.split(':')
-                                        ?.getAt(1)
+                                    def projectKey = keyLine ? keyLine.substring(keyLine.indexOf(':') + 1).trim() : null
                                     if (!projectKey) {
                                         echo "[WARN] No Sonar project key for module: ${module}, skipping"
                                         return
@@ -707,10 +706,16 @@ pipeline {
                                 // ✅ Timeout CRITICAL: tránh zombie pipeline
                                 timeout(time: 15, unit: 'MINUTES') {
                                     def gateResult = waitForQualityGate abortPipeline: false
-                                    
-                                    if (gateResult.status != 'OK') {
-                                        echo "[ERROR] Quality Gate failed: ${gateResult.status}"
-                                        // Log chi tiết để debug
+                                    // Archive JaCoCo coverage
+                                    archiveArtifacts artifacts: '**/target/site/jacoco/jacoco.xml',
+                                                 allowEmptyArchive: true,
+                                                 fingerprint: true
+
+                                    // Publish JaCoCo report for Jenkins charts (requires JaCoCo plugin)
+                                    jacoco execPattern: '**/target/jacoco.exec',
+                                           classPattern: '**/target/classes',
+                                           sourcePattern: '**/src/main/java',
+                                           exclusionPattern: '**/target/**'
                                         echo "[DEBUG] Quality Gate details: ${gateResult}"
                                         
                                         // Fail pipeline cho PR
