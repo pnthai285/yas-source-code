@@ -161,24 +161,12 @@ pipeline {
                     echo "[INFO] === GITLEAKS SCAN STARTED ==="
                     
                     try {
-                        // Install gitleaks binary nếu chưa có (không cần sudo)
-                        sh '''
-                            if ! command -v gitleaks &> /dev/null; then
-                                echo "[INFO] Installing gitleaks binary..."
-                                curl -sL https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks-linux-amd64 -o ./gitleaks
-                                chmod +x ./gitleaks
-                                # Try to move to PATH, ignore error if no sudo
-                                sudo mv ./gitleaks /usr/local/bin/ 2>/dev/null || echo "[WARN] Using local gitleaks binary"
-                            fi
-                        '''
-                        
-                        // Run gitleaks với timeout để tránh treo
+                        // Run gitleaks in Docker for consistent environment
                         timeout(time: 5, unit: 'MINUTES') {
                             sh '''
                                 echo "[INFO] Running Gitleaks on commit ${GIT_COMMIT_SHORT}..."
-                                # Dùng binary local nếu không có trong PATH
-                                GITLEAKS_CMD=$(command -v gitleaks 2>/dev/null || echo "./gitleaks")
-                                $GITLEAKS_CMD detect --source=. --verbose --redact --exit-code=1
+                                docker run --rm -v ${WORKSPACE}:/path zricethezav/gitleaks:latest \
+                                    detect --source=/path --verbose --redact --exit-code=1
                             '''
                         }
                         echo "[OK] Gitleaks passed - no secrets detected."
