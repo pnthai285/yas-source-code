@@ -162,20 +162,33 @@ pipeline {
                     def gitleaksBin = "${WORKSPACE}/gitleaks"
                     
                     sh """
-                        set -e
-                        if ! command -v gitleaks &> /dev/null && [ ! -f ${gitleaksBin} ]; then
+                        set -euo pipefail
+                        
+                        if command -v gitleaks &> /dev/null; then
+                            echo "[INFO] Gitleaks found in PATH: $(command -v gitleaks)"
+                        fi
+                        
+                        if [ ! -f ${gitleaksBin} ]; then
                             echo "[INFO] Downloading gitleaks ${gitleaksVersion}..."
-                            curl -sL "https://github.com/gitleaks/gitleaks/releases/download/v${gitleaksVersion}/gitleaks_${gitleaksVersion}_linux_x64.tar.gz" -o gitleaks.tar.gz
+                            curl -fL "https://github.com/gitleaks/gitleaks/releases/download/v${gitleaksVersion}/gitleaks_${gitleaksVersion}_linux_x64.tar.gz" -o gitleaks.tar.gz
                             tar -xzf gitleaks.tar.gz gitleaks
                             chmod +x gitleaks
-                            mv gitleaks ${gitleaksBin}
                             rm -f gitleaks.tar.gz
                         else
-                            echo "[INFO] Gitleaks binary already available"
+                            echo "[INFO] Gitleaks binary already available at ${gitleaksBin}"
                         fi
+                        
+                        if [ ! -x ${gitleaksBin} ]; then
+                            echo "[ERROR] Gitleaks binary is not executable: ${gitleaksBin}"
+                            exit 1
+                        fi
+                        
+                        echo "[INFO] Gitleaks version:"
+                        ${gitleaksBin} version
                     """
                     
                     sh """
+                        set -euo pipefail
                         ${gitleaksBin} detect --source=. --no-git --redact --exit-code=1
                     """
                 }
