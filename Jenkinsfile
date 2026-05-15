@@ -675,10 +675,10 @@ pipeline {
                                                         -pl ${module} -am \
                                                         -Dsonar.projectKey=${projectKey} \
                                                         -Dsonar.projectName=${module} \
-                                                        -Dsonar.sources=${module}/src/main/java \
-                                                        -Dsonar.tests=${module}/src/test/java \
-                                                        -Dsonar.java.binaries=${module}/target/classes \
-                                                        -Dsonar.coverage.jacoco.xmlReportPaths=${module}/target/site/jacoco/jacoco.xml \
+                                                        -Dsonar.sources=src/main/java \
+                                                        -Dsonar.tests=src/test/java \
+                                                        -Dsonar.java.binaries=target/classes \
+                                                        -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
                                                         -Dsonar.scm.disabled=true \
                                                         -Dsonar.login=\${SONAR_AUTH_TOKEN}
                                                 """
@@ -758,7 +758,7 @@ pipeline {
                             
                             try {
                                 timeout(time: 10, unit: 'MINUTES') {
-                                    withCredentials([[$class: 'SnykApiTokenBinding', credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN']]) {
+                                    withCredentials([string(credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN')]) {
                                         
                                         def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
                                         if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
