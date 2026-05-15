@@ -554,6 +554,7 @@ pipeline {
                         script {
                             echo "[INFO] === INTEGRATION TESTS STARTED ==="
                             
+                            def sonarRan = false
                             try {
                                 def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
                                 if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
@@ -682,12 +683,12 @@ pipeline {
                                         }
                                     }
                                 }
-                                env.SONAR_RAN = sonarRan ? 'true' : 'false'
-                                
                             } catch (Exception e) {
                                 echo "[ERROR] SonarQube analysis failed: ${e.message}"
                                 // Log error nhưng không fail pipeline để tiếp tục các stage khác
                                 echo "[WARN] Sonar analysis error logged, continuing pipeline"
+                            } finally {
+                                env.SONAR_RAN = sonarRan ? 'true' : 'false'
                             }
                         }
                     }
@@ -754,7 +755,7 @@ pipeline {
                             
                             try {
                                 timeout(time: 10, unit: 'MINUTES') {
-                                    withCredentials([string(credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN')]) {
+                                    withCredentials([[$class: 'SnykApiTokenBinding', credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN']]) {
                                         
                                         def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
                                         if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
