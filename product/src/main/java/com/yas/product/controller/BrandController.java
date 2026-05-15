@@ -32,7 +32,7 @@ import org.springframework.web.util.UriComponentsBuilder;
 
 @RestController
 public class BrandController {
-    //BrandController for YAS product service pntha
+    //BrandController for YAS product service pnth
     private static final Logger log = LoggerFactory.getLogger(BrandController.class);
     private final BrandRepository brandRepository;
     private final BrandService brandService;

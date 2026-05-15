@@ -5,6 +5,9 @@
 // Best-Practices: Retry at Master, Smart Routing, Maven Reactor, Graceful Error Handling
 // ============================================================
 
+def isPR = false
+def buildErrors = []
+
 pipeline {
     // ============================================================
     // 1. AGENT & GLOBAL OPTIONS
@@ -87,6 +90,7 @@ pipeline {
                     env.COMMON_LIB_CHANGED = 'false'
                     env.SHOULD_BUILD = 'false'
                     env.SONAR_RAN = 'false'
+                    isPR = env.CHANGE_ID != null
                     
                     try {
                         env.GIT_COMMIT_SHORT = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : 'unknown'
@@ -414,7 +418,7 @@ pipeline {
                         script {
                             echo "[INFO] === COMPILE & PACKAGE STARTED ==="
                             
-                            try {
+                            runStageOrWarn('Compile & Package') {
                                 def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
                                 
                                 // Nếu common-library thay đổi, build tất cả dependents
@@ -469,11 +473,6 @@ pipeline {
                                 }
                                 
                                 echo "[OK] Compile & Package completed"
-                                
-                            } catch (Exception e) {
-                                echo "[ERROR] Compile failed: ${e.message}"
-                                // Fail fast cho compile stage
-                                throw e
                             }
                         }
                     }
@@ -487,8 +486,7 @@ pipeline {
                         script {
                             echo "[INFO] === UNIT TESTS STARTED ==="
                             
-                            try {
-                                def sonarRan = false
+                            runStageOrWarn('Unit Tests') {
                                 def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
                                 if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
                                     modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
@@ -505,9 +503,8 @@ pipeline {
                                 frontendModules.each { module ->
                                     echo "[INFO] Running unit tests for frontend: ${module}"
                                     dir(module) {
-                                        // Continue on test failure để collect all results
                                         sh """
-                                            npm test -- --coverage --watchAll=false --passWithNoTests || true
+                                            npm test -- --coverage --watchAll=false --passWithNoTests
                                         """
                                     }
                                 }
@@ -526,14 +523,10 @@ pipeline {
                                         sh """
                                             export JAVA_HOME=${javaHome}
                                             export PATH=${javaHome}/bin:\$PATH
-                                            ${mvnCmd} || true  # Continue để collect test results
+                                            ${mvnCmd}
                                         """
                                     }
                                 }
-                                
-                            } catch (Exception e) {
-                                echo "[WARN] Unit tests encountered errors: ${e.message}. Continuing to integration tests."
-                                // Không throw để tiếp tục pipeline
                             }
                         }
                     }
@@ -561,8 +554,7 @@ pipeline {
                         script {
                             echo "[INFO] === INTEGRATION TESTS STARTED ==="
                             
-                            def sonarRan = false
-                            try {
+                            runStageOrWarn('Integration Tests') {
                                 def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
                                 if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
                                     modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
@@ -602,10 +594,6 @@ pipeline {
                                         """
                                     }
                                 }
-                                
-                            } catch (Exception e) {
-                                echo "[ERROR] Integration tests failed: ${e.message}"
-                                throw e  // Fail pipeline cho integration tests
                             }
                         }
                     }
@@ -643,66 +631,64 @@ pipeline {
                             branch 'main'
                             expression { env.CHANGE_ID != null }
                         }
-                        expression { currentBuild.result == null || currentBuild.result == 'SUCCESS' }
+                        expression { currentBuild.result == null || currentBuild.result in ['SUCCESS', 'UNSTABLE'] }
                     }
                     steps {
                         script {
                             echo "[INFO] === SONARQUBE ANALYSIS STARTED ==="
                             
                             def sonarRan = false
-                            try {
-                                def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
-                                if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
-                                    modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
-                                }
-                                
-                                // Chỉ scan Java modules
-                                modules.each { module ->
-                                    if (!fileExists("${module}/pom.xml")) {
-                                        echo "[INFO] Skipping Sonar for non-Java module: ${module}"
-                                        return
+                            runStageOrWarn('SonarQube Analysis') {
+                                try {
+                                    def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
+                                    if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
+                                        modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
                                     }
                                     
-                                    def keyLine = PROJECT_KEYS.readLines()
-                                        .collect { it.trim() }
-                                        .find { it.startsWith("${module}:") }
-                                    def projectKey = keyLine ? keyLine.substring(keyLine.indexOf(':') + 1).trim() : null
-                                    if (!projectKey) {
-                                        echo "[WARN] No Sonar project key for module: ${module}, skipping"
-                                        return
-                                    }
-                                    
-                                    echo "[INFO] Analyzing module: ${module} -> ${projectKey}"
-                                    
-                                    // Timeout cho Sonar scan
-                                    timeout(time: 10, unit: 'MINUTES') {
-                                        withSonarQubeEnv('sonarcloud') {
-                                            retryWithBackoff(2, 5) {
-                                                sh """
-                                                    /opt/maven/bin/mvn sonar:sonar \
-                                                        -pl ${module} -am \
-                                                        -Dsonar.projectKey=${projectKey} \
-                                                        -Dsonar.projectName=${module} \
-                                                        -Dsonar.organization=${SONAR_ORG} \
-                                                        -Dsonar.host.url=${SONAR_HOST_URL} \
-                                                        -Dsonar.sources=src/main/java \
-                                                        -Dsonar.tests=src/test/java \
-                                                        -Dsonar.java.binaries=target/classes \
-                                                        -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
-                                                        -Dsonar.scm.disabled=true \
-                                                        -Dsonar.login=\${SONAR_AUTH_TOKEN}
-                                                """
+                                    // Chỉ scan Java modules
+                                    modules.each { module ->
+                                        if (!fileExists("${module}/pom.xml")) {
+                                            echo "[INFO] Skipping Sonar for non-Java module: ${module}"
+                                            return
+                                        }
+                                        
+                                        def keyLine = PROJECT_KEYS.readLines()
+                                            .collect { it.trim() }
+                                            .find { it.startsWith("${module}:") }
+                                        def projectKey = keyLine ? keyLine.substring(keyLine.indexOf(':') + 1).trim() : null
+                                        if (!projectKey) {
+                                            echo "[WARN] No Sonar project key for module: ${module}, skipping"
+                                            return
+                                        }
+                                        
+                                        echo "[INFO] Analyzing module: ${module} -> ${projectKey}"
+                                        
+                                        // Timeout cho Sonar scan
+                                        timeout(time: 10, unit: 'MINUTES') {
+                                            withSonarQubeEnv('sonarcloud') {
+                                                retryWithBackoff(2, 5) {
+                                                    sh """
+                                                        /opt/maven/bin/mvn sonar:sonar \
+                                                            -pl ${module} -am \
+                                                            -Dsonar.projectKey=${projectKey} \
+                                                            -Dsonar.projectName=${module} \
+                                                            -Dsonar.organization=${SONAR_ORG} \
+                                                            -Dsonar.host.url=${SONAR_HOST_URL} \
+                                                            -Dsonar.sources=src/main/java \
+                                                            -Dsonar.tests=src/test/java \
+                                                            -Dsonar.java.binaries=target/classes \
+                                                            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+                                                            -Dsonar.scm.disabled=true \
+                                                            -Dsonar.login=\${SONAR_AUTH_TOKEN}
+                                                    """
+                                                }
                                             }
                                         }
+                                        sonarRan = true
                                     }
-                                    sonarRan = true
+                                } finally {
+                                    env.SONAR_RAN = sonarRan ? 'true' : 'false'
                                 }
-                            } catch (Exception e) {
-                                echo "[ERROR] SonarQube analysis failed: ${e.message}"
-                                // Log error nhưng không fail pipeline để tiếp tục các stage khác
-                                echo "[WARN] Sonar analysis error logged, continuing pipeline"
-                            } finally {
-                                env.SONAR_RAN = sonarRan ? 'true' : 'false'
                             }
                         }
                     }
@@ -760,67 +746,58 @@ pipeline {
                             branch 'main'
                             expression { env.CHANGE_ID != null }
                         }
-                        expression { currentBuild.result == null || currentBuild.result == 'SUCCESS' }
+                        expression { currentBuild.result == null || currentBuild.result in ['SUCCESS', 'UNSTABLE'] }
                     }
                     steps {
                         script {
                             echo "[INFO] === SNYK SECURITY SCAN STARTED ==="
                             
-                            try {
-                                timeout(time: 10, unit: 'MINUTES') {
-                                    def runSnykScan = { token ->
-                                        def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
-                                        if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
-                                            modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
-                                        }
-
-                                        modules.each { module ->
-                                            def scanDir = (module == 'common-library') ? '.' : module
-                                            def scanPath = (scanDir == '.') ? "${WORKSPACE}" : "${WORKSPACE}/${scanDir}"
-
-                                            echo "[INFO] Running Snyk scan for: ${module}"
-
-                                            // Snyk trong Docker với volume mount
-                                            retryWithBackoff(2, 5) {
-                                                sh """
-                                                    docker run --rm \
-                                                        -v ${scanPath}:/app:ro \
-                                                        -e SNYK_TOKEN=${token} \
-                                                        snyk/snyk:alpine \
-                                                        snyk test --all-projects \
-                                                        --severity-threshold=high \
-                                                        --fail-on=high,critical \
-                                                        --json-file-output=/app/snyk-report.json || true
-                                                """
-                                            }
-
-                                            // Archive Snyk report nếu có
-                                            if (fileExists("${scanDir}/snyk-report.json")) {
-                                                archiveArtifacts artifacts: "${scanDir}/snyk-report.json",
-                                                             allowEmptyArchive: true
-                                            }
-                                        }
+                            timeout(time: 10, unit: 'MINUTES') {
+                                def runSnykScan = { token ->
+                                    def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
+                                    if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
+                                        modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
                                     }
 
-                                    try {
-                                        withCredentials([[$class: 'SnykApiTokenBinding', credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN']]) {
-                                            runSnykScan(env.SNYK_TOKEN)
+                                    modules.each { module ->
+                                        def scanDir = (module == 'common-library') ? '.' : module
+                                        def scanPath = (scanDir == '.') ? "${WORKSPACE}" : "${WORKSPACE}/${scanDir}"
+
+                                        echo "[INFO] Running Snyk scan for: ${module}"
+
+                                        // Snyk trong Docker với volume mount
+                                        retryWithBackoff(2, 5) {
+                                            sh """
+                                                docker run --rm \
+                                                    -v ${scanPath}:/app:ro \
+                                                    -e SNYK_TOKEN=${token} \
+                                                    snyk/snyk:alpine \
+                                                    snyk test --all-projects \
+                                                    --severity-threshold=high \
+                                                    --fail-on=high,critical \
+                                                    --json-file-output=/app/snyk-report.json
+                                            """
                                         }
-                                    } catch (Exception e) {
-                                        if (env.SNYK_TOKEN?.trim()) {
-                                            echo "[WARN] Snyk binding unavailable, using SNYK_TOKEN from environment"
-                                            runSnykScan(env.SNYK_TOKEN)
-                                        } else {
-                                            error "Snyk credential binding missing. Install Snyk plugin or provide SNYK_TOKEN as secret text."
+
+                                        // Archive Snyk report nếu có
+                                        if (fileExists("${scanDir}/snyk-report.json")) {
+                                            archiveArtifacts artifacts: "${scanDir}/snyk-report.json",
+                                                         allowEmptyArchive: true
                                         }
                                     }
                                 }
-                                
-                            } catch (Exception e) {
-                                echo "[ERROR] Snyk scan failed: ${e.message}"
-                                // Security scan fail thì fail pipeline
-                                if (env.CHANGE_ID) {
-                                    throw e
+
+                                try {
+                                    withCredentials([[$class: 'SnykApiTokenBinding', credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN']]) {
+                                        runSnykScan(env.SNYK_TOKEN)
+                                    }
+                                } catch (Exception e) {
+                                    if (env.SNYK_TOKEN?.trim()) {
+                                        echo "[WARN] Snyk binding unavailable, using SNYK_TOKEN from environment"
+                                        runSnykScan(env.SNYK_TOKEN)
+                                    } else {
+                                        error "Snyk credential binding missing. Install Snyk plugin or provide SNYK_TOKEN as secret text."
+                                    }
                                 }
                             }
                         }
@@ -953,7 +930,7 @@ pipeline {
                 // 4.12: Save Maven Cache to S3
                 // ------------------------------------------------
                 stage('Save Maven Cache') {
-                    when { expression { currentBuild.result == null || currentBuild.result == 'SUCCESS' } }
+                    when { expression { currentBuild.result == null || currentBuild.result in ['SUCCESS', 'UNSTABLE'] } }
                     steps {
                         script {
                             echo "[INFO] === SAVING MAVEN CACHE ==="
@@ -1021,6 +998,21 @@ pipeline {
         // ============================================================
         // STAGE 5: Pipeline Metrics (Optional)
         // ============================================================
+        stage('Finalize Build Result') {
+            steps {
+                script {
+                    if (!isPR && buildErrors.size() > 0) {
+                        echo "[WARN] Pipeline completed with ${buildErrors.size()} error(s):"
+                        buildErrors.each { err -> echo "  - ${err}" }
+                        currentBuild.result = 'UNSTABLE'
+                    } else if (isPR && currentBuild.result == 'UNSTABLE') {
+                        currentBuild.result = 'FAILURE'
+                        error 'PR build unstable. Fix issues before merging.'
+                    }
+                }
+            }
+        }
+
         stage('Pipeline Metrics') {
             steps {
                 script {
@@ -1148,6 +1140,23 @@ def retryWithBackoff(int maxAttempts, int baseDelaySeconds, Closure closure) {
     
     // Fallback (không nên reach here)
     throw lastException ?: new RuntimeException("Retry failed with unknown error")
+}
+
+/**
+ * Run a stage with fail-fast for PR and continue-on-failure for branch builds.
+ */
+def runStageOrWarn(String stageName, Closure body) {
+    if (isPR) {
+        body()
+    } else {
+        try {
+            body()
+        } catch (Exception e) {
+            buildErrors << "[${stageName}] ${e.message}"
+            currentBuild.result = 'UNSTABLE'
+            echo "[WARN] ${stageName} failed, continuing pipeline."
+        }
+    }
 }
 
 /**
