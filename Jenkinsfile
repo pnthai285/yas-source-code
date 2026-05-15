@@ -165,7 +165,7 @@ pipeline {
                         set -euo pipefail
                         
                         if command -v gitleaks &> /dev/null; then
-                            echo "[INFO] Gitleaks found in PATH: $(command -v gitleaks)"
+                            echo "[INFO] Gitleaks found in PATH: \$(command -v gitleaks)"
                         fi
                         
                         if [ ! -f ${gitleaksBin} ]; then
