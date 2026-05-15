@@ -102,7 +102,7 @@ pipeline {
                         
                         // Tìm danh sách modules (pom.xml hoặc package.json)
                         def allModules = sh(
-                            script: "find . -maxdepth 2 \\( -name 'pom.xml' -o -name 'package.json' \\) -printf '%h\\n' 2>/dev/null | sed 's|^\\./||' | grep -v '^\\.\\$' | sort -u",
+                            script: '''find . -maxdepth 2 \( -name 'pom.xml' -o -name 'package.json' \) -printf '%h\n' 2>/dev/null | sed 's|^\./||' | grep -v '^\.$' | sort -u''',
                             returnStdout: true,
                             label: 'find-modules'
                         ).trim().split('\n').findAll { it && !it.isEmpty() }
