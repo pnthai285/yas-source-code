@@ -615,11 +615,8 @@ pipeline {
                                                  allowEmptyArchive: true,
                                                  fingerprint: true
 
-                                    // Publish JaCoCo report for Jenkins charts (requires JaCoCo plugin)
-                                    jacoco execPattern: '**/target/jacoco.exec',
-                                           classPattern: '**/target/classes',
-                                           sourcePattern: '**/src/main/java',
-                                           exclusionPattern: '**/target/**'
+                                     // Publish JaCoCo report for Jenkins charts (Coverage API plugin)
+                                     recordCoverage tools: [[parser: 'JACOCO', pattern: '**/target/site/jacoco/jacoco.xml']]
                                 } catch (Exception e) {
                                     echo "[WARN] Failed to archive integration test artifacts: ${e.message}"
                                 }
