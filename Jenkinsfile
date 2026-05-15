@@ -37,7 +37,7 @@ pipeline {
         BRANCH_NAME        = "${env.BRANCH_NAME}"
         CHANGE_ID          = "${env.CHANGE_ID}"
         CHANGE_TARGET      = "${env.CHANGE_TARGET ?: 'main'}"
-        GIT_COMMIT_SHORT   = "${env.GIT_COMMIT?.take(7) ?: 'unknown'}"
+        GIT_COMMIT_SHORT   = "${env.GIT_COMMIT ?: 'unknown'}"
         
         // SonarCloud project keys mapping (đã tạo trên UI)
         PROJECT_KEYS = '''
@@ -87,6 +87,7 @@ pipeline {
                     echo "[INFO] Target branch: ${CHANGE_TARGET}"
                     
                     try {
+                        env.GIT_COMMIT_SHORT = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : 'unknown'
                         // Fetch target branch để có merge base chính xác
                         sh "git fetch origin ${CHANGE_TARGET}:refs/remotes/origin/${CHANGE_TARGET} --depth=50"
                         
@@ -955,7 +956,7 @@ pipeline {
     // ============================================================
     post {
         always {
-            script {
+            node('master') {
                 echo "[INFO] === POST ACTIONS: CLEANUP ==="
                 
                 try {
@@ -982,7 +983,6 @@ pipeline {
         failure {
             script {
                 echo "[ERROR] === PIPELINE FAILED ==="
-                echo "[ERROR] Build #${env.BUILD_NUMBER} failed at stage: ${currentBuild.currentStage?.name ?: 'unknown'}"
                 
                 // Slack notification với error handling
                 try {
@@ -991,7 +991,6 @@ pipeline {
                               message: "❌ Pipeline FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}\n" +
                                        "Branch: ${env.BRANCH_NAME}\n" +
                                        "Commit: ${env.GIT_COMMIT_SHORT}\n" +
-                                       "Stage: ${currentBuild.currentStage?.name}\n" +
                                        "URL: ${env.BUILD_URL}"
                 } catch (Exception e) {
                     echo "[WARN] Failed to send Slack notification: ${e.message}"
