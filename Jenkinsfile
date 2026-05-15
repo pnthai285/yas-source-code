@@ -62,6 +62,9 @@ pipeline {
             tax:pnthai285_yas-tax
             webhook:pnthai285_yas-webhook
         '''
+
+        SONAR_ORG       = 'pnthai285'
+        SONAR_HOST_URL  = 'https://sonarcloud.io'
         
         // Module lists are set in Smart Routing
     }
@@ -680,6 +683,8 @@ pipeline {
                                                         -pl ${module} -am \
                                                         -Dsonar.projectKey=${projectKey} \
                                                         -Dsonar.projectName=${module} \
+                                                        -Dsonar.organization=${SONAR_ORG} \
+                                                        -Dsonar.host.url=${SONAR_HOST_URL} \
                                                         -Dsonar.sources=src/main/java \
                                                         -Dsonar.tests=src/test/java \
                                                         -Dsonar.java.binaries=target/classes \
@@ -763,25 +768,24 @@ pipeline {
                             
                             try {
                                 timeout(time: 10, unit: 'MINUTES') {
-                                    withCredentials([[$class: 'SnykApiTokenBinding', credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN']]) {
-                                        
+                                    def runSnykScan = { token ->
                                         def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
                                         if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
                                             modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
                                         }
-                                        
+
                                         modules.each { module ->
                                             def scanDir = (module == 'common-library') ? '.' : module
                                             def scanPath = (scanDir == '.') ? "${WORKSPACE}" : "${WORKSPACE}/${scanDir}"
-                                            
+
                                             echo "[INFO] Running Snyk scan for: ${module}"
-                                            
+
                                             // Snyk trong Docker với volume mount
                                             retryWithBackoff(2, 5) {
                                                 sh """
                                                     docker run --rm \
                                                         -v ${scanPath}:/app:ro \
-                                                        -e SNYK_TOKEN=\${SNYK_TOKEN} \
+                                                        -e SNYK_TOKEN=${token} \
                                                         snyk/snyk:alpine \
                                                         snyk test --all-projects \
                                                         --severity-threshold=high \
@@ -789,12 +793,25 @@ pipeline {
                                                         --json-file-output=/app/snyk-report.json || true
                                                 """
                                             }
-                                            
+
                                             // Archive Snyk report nếu có
                                             if (fileExists("${scanDir}/snyk-report.json")) {
-                                                archiveArtifacts artifacts: "${scanDir}/snyk-report.json", 
+                                                archiveArtifacts artifacts: "${scanDir}/snyk-report.json",
                                                              allowEmptyArchive: true
                                             }
+                                        }
+                                    }
+
+                                    try {
+                                        withCredentials([[$class: 'SnykApiTokenBinding', credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN']]) {
+                                            runSnykScan(env.SNYK_TOKEN)
+                                        }
+                                    } catch (Exception e) {
+                                        if (env.SNYK_TOKEN?.trim()) {
+                                            echo "[WARN] Snyk binding unavailable, using SNYK_TOKEN from environment"
+                                            runSnykScan(env.SNYK_TOKEN)
+                                        } else {
+                                            error "Snyk credential binding missing. Install Snyk plugin or provide SNYK_TOKEN as secret text."
                                         }
                                     }
                                 }
