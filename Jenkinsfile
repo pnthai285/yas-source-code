@@ -1066,14 +1066,17 @@ def runSnykSecurityScanStage() {
                     // Truyền vào Docker CLI chuẩn
                     // Loại bỏ --fail-on=high,critical vì không hợp lệ
                     // Bỏ :ro để cho phép snyk ghi file tạm, mount ~/.m2 để reuse cache và giới hạn RAM 3g tránh OOM
+                    // Thêm chmod +x cho mvnw để tránh lỗi EACCES (-13) khi snyk gọi script
                     sh """
+                        chmod +x ${scanPath}/mvnw 2>/dev/null || true
                         docker run --rm -m 3g \
                             -v ${scanPath}:/app \
                             -v \$HOME/.m2:/root/.m2 \
                             -v \$HOME/.m2:/home/node/.m2 \
                             -e SNYK_TOKEN=\${SNYK_TOKEN} \
+                            -e MAVEN_OPTS="-Xmx2g" \
                             snyk/snyk:alpine \
-                            snyk test --all-projects \
+                            snyk test -d --all-projects \
                             --severity-threshold=high \
                             --json-file-output=/app/snyk-report.json
                     """
