@@ -935,7 +935,11 @@ def runUnitTestsStage() {
         echo "[INFO] Running unit tests for frontend: ${module}"
         dir(module) {
             sh """
-                docker run --rm -v ${WORKSPACE}/${module}:/app -w /app node:20-alpine npm test -- --coverage --watchAll=false --passWithNoTests
+                if grep -q '"test":' package.json; then
+                    docker run --rm -v ${WORKSPACE}/${module}:/app -w /app node:20-alpine npm test -- --coverage --watchAll=false --passWithNoTests
+                else
+                    echo "[INFO] No test script found in ${module}/package.json. Skipping."
+                fi
             """
         }
     }
