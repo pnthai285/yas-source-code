@@ -227,20 +227,31 @@ pipeline {
                                         script: """
                                             set +e
                                             aws s3 cp s3://${env.CACHE_BUCKET}/maven/${BRANCH_NAME}-${env.CACHE_KEY}.tar.gz ./cache.tar.gz 2>/dev/null
-                                            exit \$?
+                                            
+                                            if [ -f cache.tar.gz ]; then
+                                                aws s3 cp s3://${env.CACHE_BUCKET}/maven/${BRANCH_NAME}-${env.CACHE_KEY}.tar.gz.md5 ./cache.tar.gz.md5 2>/dev/null || true
+                                                
+                                                mkdir -p ~/.m2
+                                                
+                                                if [ -f cache.tar.gz.md5 ]; then
+                                                    echo "[INFO] Verifying cache checksum..."
+                                                    md5sum -c cache.tar.gz.md5 || {
+                                                        echo "[WARN] Cache corrupt or mismatch. Deleting and falling back to fresh build."
+                                                        rm -f cache.tar.gz cache.tar.gz.md5
+                                                        exit 1
+                                                    }
+                                                fi
+                                                
+                                                tar -xzf cache.tar.gz -C ~/.m2
+                                                echo "[OK] Cache restored successfully"
+                                            else
+                                                exit 1
+                                            fi
                                         """,
                                         returnStatus: true,
                                         label: 'restore-branch-cache'
                                     )
-                                    if (exitCode == 0 && fileExists('cache.tar.gz')) {
-                                        // Verify checksum nếu có
-                                        if (sh(script: "aws s3 ls s3://${env.CACHE_BUCKET}/maven/${BRANCH_NAME}-${env.CACHE_KEY}.tar.gz.md5 2>/dev/null", returnStatus: true) == 0) {
-                                            sh "aws s3 cp s3://${env.CACHE_BUCKET}/maven/${BRANCH_NAME}-${env.CACHE_KEY}.tar.gz.md5 ./cache.tar.gz.md5 2>/dev/null"
-                                            if (fileExists('cache.tar.gz.md5')) {
-                                                sh "md5sum -c cache.tar.gz.md5 || { echo '[WARN] Cache checksum mismatch'; rm -f cache.tar.gz.md5; }"
-                                            }
-                                        }
-                                        sh "tar -xzf cache.tar.gz -C ~/.m2 2>/dev/null"
+                                    if (exitCode == 0) {
                                         echo "[OK] Restored branch cache"
                                         cacheRestored = true
                                     }
@@ -252,13 +263,31 @@ pipeline {
                                         script: """
                                             set +e
                                             aws s3 cp s3://${env.CACHE_BUCKET}/maven/main-${env.CACHE_KEY}.tar.gz ./cache.tar.gz 2>/dev/null
-                                            exit \$?
+                                            
+                                            if [ -f cache.tar.gz ]; then
+                                                aws s3 cp s3://${env.CACHE_BUCKET}/maven/main-${env.CACHE_KEY}.tar.gz.md5 ./cache.tar.gz.md5 2>/dev/null || true
+                                                
+                                                mkdir -p ~/.m2
+                                                
+                                                if [ -f cache.tar.gz.md5 ]; then
+                                                    echo "[INFO] Verifying cache checksum..."
+                                                    md5sum -c cache.tar.gz.md5 || {
+                                                        echo "[WARN] Cache corrupt or mismatch. Deleting and falling back to fresh build."
+                                                        rm -f cache.tar.gz cache.tar.gz.md5
+                                                        exit 1
+                                                    }
+                                                fi
+                                                
+                                                tar -xzf cache.tar.gz -C ~/.m2
+                                                echo "[OK] Cache restored successfully"
+                                            else
+                                                exit 1
+                                            fi
                                         """,
                                         returnStatus: true,
                                         label: 'restore-main-cache'
                                     )
-                                    if (exitCode == 0 && fileExists('cache.tar.gz')) {
-                                        sh "tar -xzf cache.tar.gz -C ~/.m2 2>/dev/null"
+                                    if (exitCode == 0) {
                                         echo "[OK] Restored main cache"
                                         cacheRestored = true
                                     }
@@ -434,10 +463,10 @@ pipeline {
                 }
 
                 // ------------------------------------------------
-                // 4.10: Build & Push Docker Image (chỉ main branch)
+                // 4.10: Build & Push Docker Image
                 // ------------------------------------------------
                 stage('Build & Push Docker Image') {
-                    when { branch 'main' }
+                    when { expression { env.SHOULD_BUILD == 'true' } }
                     steps {
                         script {
                             echo "[INFO] === DOCKER BUILD & PUSH STARTED ==="
@@ -1023,50 +1052,40 @@ def runSonarAnalysisStage() {
 
 def runSnykSecurityScanStage() {
     timeout(time: 10, unit: 'MINUTES') {
-        def runSnykScan = { token ->
-            def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
-            if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
-                modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
-            }
-
-            modules.each { module ->
-                def scanDir = (module == 'common-library') ? '.' : module
-                def scanPath = (scanDir == '.') ? "${WORKSPACE}" : "${WORKSPACE}/${scanDir}"
-
-                echo "[INFO] Running Snyk scan for: ${module}"
-
-                // Snyk trong Docker với volume mount
-                sh """
-                    docker run --rm \
-                        -v ${scanPath}:/app:ro \
-                        -e SNYK_TOKEN=${token} \
-                        snyk/snyk:alpine \
-                        snyk test --all-projects \
-                        --severity-threshold=high \
-                        --fail-on=high,critical \
-                        --json-file-output=/app/snyk-report.json
-                """
-
-                // Archive Snyk report nếu có
-                if (fileExists("${scanDir}/snyk-report.json")) {
-                    archiveArtifacts artifacts: "${scanDir}/snyk-report.json",
-                                 allowEmptyArchive: true
-                }
-            }
+        def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
+        if (modules.isEmpty() && env.COMMON_LIB_CHANGED == 'true') {
+            modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
         }
 
         try {
-            withCredentials([string(credentialsId: env.SNYK_CREDENTIALS_ID, variable: 'SNYK_TOKEN')]) {
-                runSnykScan(env.SNYK_TOKEN)
+            withCredentials([string(credentialsId: 'snyk-api-token-yas', variable: 'SNYK_TOKEN')]) {
+                modules.each { module ->
+                    def scanDir = (module == 'common-library') ? '.' : module
+                    def scanPath = (scanDir == '.') ? "${WORKSPACE}" : "${WORKSPACE}/${scanDir}"
+
+                    echo "[INFO] Running Snyk scan for: ${module}"
+
+                    // Truyền vào Docker CLI chuẩn
+                    sh """
+                        docker run --rm \
+                            -v ${scanPath}:/app:ro \
+                            -e SNYK_TOKEN=\${SNYK_TOKEN} \
+                            snyk/snyk:alpine \
+                            snyk test --all-projects \
+                            --severity-threshold=high \
+                            --fail-on=high,critical \
+                            --json-file-output=/app/snyk-report.json
+                    """
+
+                    // Archive Snyk report nếu có
+                    if (fileExists("${scanDir}/snyk-report.json")) {
+                        archiveArtifacts artifacts: "${scanDir}/snyk-report.json",
+                                     allowEmptyArchive: true
+                    }
+                }
             }
         } catch (Exception e) {
-            if (env.SNYK_TOKEN?.trim()) {
-                echo "[WARN] Snyk credentials binding failed, using SNYK_TOKEN from environment"
-                runSnykScan(env.SNYK_TOKEN)
-            } else {
-                echo "[WARN] Snyk token missing; skipping Snyk scan to avoid pipeline failure"
-                currentBuild.result = currentBuild.result ?: 'UNSTABLE'
-            }
+            error "❌ SNYK_TOKEN missing. Check credential 'snyk-api-token-yas' (Kind: Secret text). Error: ${e.message}"
         }
     }
 }
@@ -1077,53 +1096,56 @@ def runBuildAndPushStage() {
     modules.each { module ->
         def dockerfilePath = "${module}/Dockerfile"
         if (!fileExists(dockerfilePath)) {
-            echo "[WARN] No Dockerfile for ${module}, skipping image build"
+            echo "[BUILD][${module}] SKIP: No Dockerfile"
             return
         }
-
+        
         def immutableTag = "yas-${module}:${env.GIT_COMMIT_SHORT}"
-        echo "[INFO] Building image for module: ${module}"
-
+        echo "[BUILD][${module}] START: Building ${immutableTag}"
+        
         try {
+            // ❌ KHÔNG retry docker build (lỗi code/Dockerfile → fail ngay)
             if (module in ['backoffice', 'storefront']) {
-                // Frontend: build từ root với -f flag
                 sh """
-                    docker build -f ${dockerfilePath} \
-                        -t ${env.REGISTRY}/${immutableTag} . \
-                        --progress=plain
+                    echo "[BUILD][${module}] STEP: docker build (frontend context)"
+                    docker build -f ${dockerfilePath} -t ${env.REGISTRY}/${immutableTag} . --progress=plain
                 """
             } else {
-                // Backend: build từ folder module
                 dir(module) {
                     sh """
-                        docker build -t ${env.REGISTRY}/${immutableTag} . \
-                            --progress=plain
+                        echo "[BUILD][${module}] STEP: docker build (backend context)"
+                        docker build -t ${env.REGISTRY}/${immutableTag} . --progress=plain
                     """
                 }
             }
-
-            // Push với retry cho network issues
-            echo "[INFO] Pushing ${immutableTag} to ${env.REGISTRY}"
-            retry(maxInfraRetry) {
+            
+            // ✅ CHỈ retry docker push (network transient)
+            echo "[PUSH][${module}] START: Pushing to ${env.REGISTRY}"
+            retry(2) {
                 sh """
+                    echo "[PUSH][${module}] STEP: docker push attempt"
                     docker push ${env.REGISTRY}/${immutableTag}
                 """
             }
-
-            // Mutable tag cho human-readable
+            
+            // Mutable tag
             def mutableTag = "yas-${module}:${env.BRANCH_NAME.replace('/', '-')}-${env.GIT_COMMIT_SHORT}"
             sh """
                 docker tag ${env.REGISTRY}/${immutableTag} ${env.REGISTRY}/${mutableTag}
                 docker push ${env.REGISTRY}/${mutableTag}
             """
-
-            echo "[OK] Pushed ${immutableTag}"
-
+            echo "[BUILD][${module}] ✅ SUCCESS: Pushed ${immutableTag} & ${mutableTag}"
+            
         } catch (Exception e) {
-            echo "[ERROR] Failed to build/push image for ${module}: ${e.message}"
-            // Continue với module khác, không fail toàn pipeline
+            echo "[BUILD][${module}] ❌ FAILED: ${e.message}"
+            // Fail pipeline cho PR, collect error cho feature branch
+            if (env.CHANGE_ID) error "Build/Push failed for ${module}"
+            else currentBuild.result = 'UNSTABLE'
         }
     }
+
+    // Dọn disk sau build
+    sh "docker image prune -f --filter 'until=24h' 2>/dev/null || true"
 }
 
 def runSaveMavenCacheStage() {
@@ -1162,7 +1184,7 @@ def runSaveMavenCacheStage() {
                         --storage-class STANDARD_IA
 
                     # Tạo và upload checksum
-                    md5sum cache.tar.gz | awk '{print \$1}' > cache.tar.gz.md5
+                    md5sum cache.tar.gz > cache.tar.gz.md5
                     aws s3 cp cache.tar.gz.md5 \
                         s3://${env.CACHE_BUCKET}/maven/${BRANCH_NAME}-${env.CACHE_KEY}.tar.gz.md5
 
