@@ -711,7 +711,7 @@ def runSmartRoutingStage() {
     env.COMMON_LIB_CHANGED = 'false'
     env.SHOULD_BUILD = 'false'
     env.SONAR_RAN = 'false'
-    isPR = env.CHANGE_ID != null
+    isPR = env.CHANGE_ID && env.CHANGE_ID.toString() != 'null' && env.CHANGE_ID.toString().trim() != ''
     maxInfraRetry = isPR ? 1 : 2
 
     try {
@@ -724,9 +724,30 @@ def runSmartRoutingStage() {
         // Fetch target branch để có merge base chính xác
         sh "git fetch origin ${CHANGE_TARGET}:refs/remotes/origin/${CHANGE_TARGET} --depth=50"
 
-        // ✅ Git diff 3-dots: so sánh từ merge base, không bị nhiễm code người khác
+        // ✅ BEST-PRACTICE CHUẨN NGÀNH (PUSH vs PR)
+        def diffScript = ""
+        if (isPR) {
+            echo "[INFO] Smart Routing Mode: Pull Request (3-dot diff from origin/${CHANGE_TARGET})"
+            diffScript = "git diff --name-only origin/${CHANGE_TARGET}...HEAD"
+        } else {
+            def prevCommit = env.GIT_PREVIOUS_COMMIT ?: 'HEAD~1'
+            echo "[INFO] Smart Routing Mode: Feature Branch Push (diff from ${prevCommit} to HEAD)"
+            diffScript = """
+                # Kiểm tra xem prevCommit có tồn tại trong git tree không
+                if git rev-parse --verify --quiet ${prevCommit} >/dev/null; then
+                    git diff --name-only ${prevCommit}..HEAD
+                else
+                    echo "[WARN] Previous commit ${prevCommit} not found in tree, falling back to HEAD~1" >&2
+                    git diff --name-only HEAD~1..HEAD
+                fi
+            """
+        }
+
         def changedFiles = sh(
-            script: "git diff --name-only origin/${CHANGE_TARGET}...HEAD",
+            script: """
+                set -e
+                ${diffScript}
+            """,
             returnStdout: true,
             label: 'git-diff'
         ).trim().split('\n').findAll { it && !it.isEmpty() }
@@ -1004,10 +1025,12 @@ def runSonarAnalysisStage() {
             modules = PROJECT_KEYS.readLines().collect { it.split(':')[0] }.findAll { it }
         }
 
-        // Chỉ scan Java modules
+        // Scan cả Java và Frontend modules
         modules.each { module ->
-            if (!fileExists("${module}/pom.xml")) {
-                echo "[INFO] Skipping Sonar for non-Java module: ${module}"
+            def isFrontend = (module in ['backoffice', 'storefront'])
+
+            if (!isFrontend && !fileExists("${module}/pom.xml")) {
+                echo "[INFO] Skipping Sonar for non-Java and non-Frontend module: ${module}"
                 return
             }
 
@@ -1025,20 +1048,39 @@ def runSonarAnalysisStage() {
             // Timeout cho Sonar scan
             timeout(time: 10, unit: 'MINUTES') {
                 withSonarQubeEnv('sonarcloud') {
-                    sh """
-                        /opt/maven/bin/mvn sonar:sonar \
-                            -pl ${module} -am \
-                            -Dsonar.projectKey=${projectKey} \
-                            -Dsonar.projectName=${module} \
-                            -Dsonar.organization=${SONAR_ORG} \
-                            -Dsonar.host.url=${SONAR_HOST_URL} \
-                            -Dsonar.sources=src/main/java \
-                            -Dsonar.tests=src/test/java \
-                            -Dsonar.java.binaries=target/classes \
-                            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
-                            -Dsonar.scm.disabled=true \
-                            -Dsonar.login=\${SONAR_AUTH_TOKEN}
-                    """
+                    if (isFrontend) {
+                        dir(module) {
+                            sh """
+                                docker run --rm \
+                                    -v ${WORKSPACE}/${module}:/usr/src \
+                                    -e SONAR_HOST_URL=${SONAR_HOST_URL} \
+                                    -e SONAR_TOKEN=\${SONAR_AUTH_TOKEN} \
+                                    sonarsource/sonar-scanner-cli \
+                                    -Dsonar.projectKey=${projectKey} \
+                                    -Dsonar.projectName=${module} \
+                                    -Dsonar.organization=${SONAR_ORG} \
+                                    -Dsonar.sources=. \
+                                    -Dsonar.exclusions=node_modules/**,.next/**,out/**,coverage/**,public/** \
+                                    -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
+                                    -Dsonar.scm.disabled=true
+                            """
+                        }
+                    } else {
+                        sh """
+                            /opt/maven/bin/mvn sonar:sonar \
+                                -pl ${module} -am \
+                                -Dsonar.projectKey=${projectKey} \
+                                -Dsonar.projectName=${module} \
+                                -Dsonar.organization=${SONAR_ORG} \
+                                -Dsonar.host.url=${SONAR_HOST_URL} \
+                                -Dsonar.sources=src/main/java \
+                                -Dsonar.tests=src/test/java \
+                                -Dsonar.java.binaries=target/classes \
+                                -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+                                -Dsonar.scm.disabled=true \
+                                -Dsonar.login=\${SONAR_AUTH_TOKEN}
+                        """
+                    }
                 }
             }
             sonarRan = true
@@ -1126,7 +1168,7 @@ def runSnykSecurityScanStage() {
                         echo "⚠️ Please upgrade the libraries according to Snyk's instructions in the log.."
                         
                         if (isPR || env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master') {
-                            error "❌ [POLICY] Strict gate for PR/Main: A high-risk security vulnerability exists. Hard Gate: Build failed (Exit 1)!"
+                            error "❌ [POLICY] Strict gate for PR/Main (isPR=${isPR}, BRANCH_NAME=${env.BRANCH_NAME}): A high-risk security vulnerability exists. Hard Gate: Build failed (Exit 1)!"
                         } else {
                             echo "⚠️ [POLICY] Feature branch: Only warning (Non-blocking), continue build."
                         }
