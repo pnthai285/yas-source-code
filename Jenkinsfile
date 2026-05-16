@@ -1219,43 +1219,48 @@ def runSnykSecurityScanStage() {
                         }
                     }
 
-                    // Xử lý Exit Code của Snyk theo Best-Practice chuẩn ngành
+                    // Xử lý Exit Code của Snyk theo Best-Practice 
                     switch(snykExitCode) {
                         case 0:
                             echo "✅ [SUCCESS] Snyk scan passed! No high-severity vulnerabilities found in module: ${module}."
                             break
-                    
+
                         case 1:
                             echo "⚠️ [SECURITY WARNING] Snyk found HIGH-SEVERITY VULNERABILITIES in module: ${module}!"
-                            
+
                             // Kiểm tra xem đích đến cuối cùng của code có phải là các nhánh Production không
                             def isTargetingProd = (isPR && (env.CHANGE_TARGET == 'main' || env.CHANGE_TARGET == 'master')) || 
                                                   (env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master')
-                    
+
                             if (isTargetingProd) {
                                 echo "❌ [POLICY] Tight security gate enforced for PR/Production branches."
                                 echo "👉 ACTION REQUIRED: Please view the Snyk report artifact and upgrade your libraries immediately to fix the issues."
-                                error "❌ [HARD GATE] Pipeline aborted due to security vulnerability compliance violation."
+
+                                // Đánh dấu build thất bại để khóa PR trên GitHub nhưng không ném Exception gây lặp log
+                                currentBuild.result = 'FAILURE'
+                                return
                             } else {
                                 echo "ℹ️ [POLICY] Feature branch detected. This warning is non-blocking (Continue build). However, please fix these vulnerabilities before opening a PR."
                             }
                             break
-                    
+
                         case 2:
                             echo "🔥 [SNYK SYSTEM ERROR] Snyk CLI failed due to environment/network issues (e.g., Token expired, 403 Forbidden, rate limit)."
                             echo "👉 TIP: Check your SNYK_TOKEN credentials or run the command locally with 'snyk test -d' to view debug logs."
-                            error "❌ [SYSTEM FAILURE] Snyk infrastructure failure. Hard failing the pipeline."
-                            break
-                    
+
+                            // Đánh dấu lỗi hệ thống và dừng stage êm đẹp
+                            currentBuild.result = 'FAILURE'
+                            return
+
                         case 3:
                             echo "ℹ️ [INFO] Snyk did not find any supported package manager files (e.g., package.json, pom.xml) to scan in ${module}. Skipping gracefully."
                             break
-                    
-                        default:
-                            error "❌ [UNKNOWN ERROR] Snyk scan terminated with an unexpected status code: ${snykExitCode}. Please contact DevOps team."
-                            break
-                    }
 
+                        default:
+                            echo "❌ [UNKNOWN ERROR] Snyk scan terminated with an unexpected status code: ${snykExitCode}. Please contact DevOps team."
+                            currentBuild.result = 'FAILURE'
+                            return
+                    }
                 }
             }
         } catch (Exception e) {
