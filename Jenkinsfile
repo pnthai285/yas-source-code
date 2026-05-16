@@ -1083,6 +1083,17 @@ def runSnykSecurityScanStage() {
                         # Cấp quyền thực thi cho mvnw để Snyk không bị lỗi EACCES (-13)
                         chmod +x ${scanPath}/mvnw 2>/dev/null || true
 
+                        # Phải install parent POM và common-library trước vì Snyk gọi mvn dependency:tree cục bộ
+                        # Nếu không có yas POM và common-library trong ~/.m2, mvn sẽ báo lỗi "Could not find artifact"
+                        if [ ! -f .snyk-prebuild-done ]; then
+                            echo "[INFO] Pre-building parent POM and common-library for Snyk resolution..."
+                            mvn install -N -DskipTests -q || true
+                            if [ -d common-library ]; then
+                                mvn install -pl common-library -am -DskipTests -q || true
+                            fi
+                            touch .snyk-prebuild-done
+                        fi
+
                         ./snyk-linux test -d --all-projects \\
                             --severity-threshold=high \\
                             --json-file-output=${scanPath}/snyk-report.json \\
