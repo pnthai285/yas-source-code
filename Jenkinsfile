@@ -321,7 +321,19 @@ pipeline {
                 }
 
                 // ------------------------------------------------
-                // 4.5: Unit Tests
+                // 4.5: Snyk Security Scan
+                // ------------------------------------------------
+                stage('Snyk Security Scan') {
+                    steps {
+                        script {
+                            echo "[INFO] === SNYK SECURITY SCAN STARTED ==="
+                            runSnykSecurityScanStage()
+                        }
+                    }
+                }
+
+                // ------------------------------------------------
+                // 4.6: Unit Tests
                 // ------------------------------------------------
                 stage('Unit Tests') {
                     steps {
@@ -439,25 +451,6 @@ pipeline {
                                     echo "[WARN] Quality Gate error on main branch, continuing"
                                 }
                             }
-                        }
-                    }
-                }
-
-                // ------------------------------------------------
-                // 4.9: Snyk Security Scan
-                // ------------------------------------------------
-                stage('Snyk Security Scan') {
-                    when {
-                        anyOf {
-                            branch 'main'
-                            expression { env.CHANGE_ID != null }
-                        }
-                        expression { currentBuild.result == null || currentBuild.result in ['SUCCESS', 'UNSTABLE'] }
-                    }
-                    steps {
-                        script {
-                            echo "[INFO] === SNYK SECURITY SCAN STARTED ==="
-                            runSnykSecurityScanStage()
                         }
                     }
                 }
@@ -983,7 +976,7 @@ def runIntegrationTestsStage() {
         ? '/usr/lib/jvm/java-21-amazon-corretto'
         : '/usr/lib/jvm/java-25-amazon-corretto'
 
-    def mvnCmd = "/opt/maven/bin/mvn verify -DskipUnitTests -T 1C -pl ${backendModules.join(',')} -am"
+    def mvnCmd = "/opt/maven/bin/mvn verify -DskipUnitTests -T 1 -DforkCount=1 -DreuseForks=true -pl ${backendModules.join(',')} -am"
     if (env.COMMON_LIB_CHANGED == 'true') mvnCmd += " -amd"
     if (env.CHANGE_ID) {
         mvnCmd += " -fae"  // Fail-At-End cho PR
@@ -997,6 +990,7 @@ def runIntegrationTestsStage() {
         sh """
             export JAVA_HOME=${javaHome}
             export PATH=${javaHome}/bin:\$PATH
+            export MAVEN_OPTS="-Xmx3g -XX:+UseG1GC -Dtestcontainers.reuse.enable=true -Dtestcontainers.ryuk.disabled=true"
             ${mvnCmd}
         """
     }
@@ -1093,8 +1087,7 @@ def runSnykSecurityScanStage() {
             if (errMsg.toLowerCase().contains("credential") || errMsg.toLowerCase().contains("could not find")) {
                 error "❌ SNYK_TOKEN missing. Check credential 'snyk-api-token-yas' (Kind: Secret text). Error: ${errMsg}"
             } else {
-                echo "[WARN] Snyk scan failed (vulnerabilities found or other error): ${errMsg}"
-                currentBuild.result = 'UNSTABLE'
+                error "❌ Snyk scan failed (vulnerabilities found or other error): ${errMsg}"
             }
         }
     }
