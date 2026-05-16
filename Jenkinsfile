@@ -1068,7 +1068,7 @@ def runSnykSecurityScanStage() {
                         ? '/usr/lib/jvm/java-21-amazon-corretto'
                         : '/usr/lib/jvm/java-25-amazon-corretto'
 
-                    // Bỏ dùng Docker image snyk:alpine vì image này không có Java/Maven
+                    // Không dùng Docker image snyk:alpine vì image này không có Java/Maven
                     // Sử dụng Snyk CLI Native trực tiếp trên Agent để tận dụng Java/Maven có sẵn
                     sh """
                         export JAVA_HOME=${javaHome}
@@ -1097,7 +1097,8 @@ def runSnykSecurityScanStage() {
                         ./snyk-linux test -d --all-projects \\
                             --severity-threshold=high \\
                             --json-file-output=${scanPath}/snyk-report.json \\
-                            ${scanPath}
+                            ${scanPath} \\
+                            -- -U -Drevision=1.0-SNAPSHOT
                     """
 
                     // Archive Snyk report nếu có
