@@ -1172,6 +1172,51 @@ def runSnykSecurityScanStage() {
                         archiveArtifacts artifacts: "${scanDir}/snyk-report.json",
                                      allowEmptyArchive: true,
                                      fingerprint: true
+                        
+                        try {
+                            echo "[INFO] Generating HTML report for ${module}..."
+                            sh """
+                                docker run --rm -v ${WORKSPACE}:/app -w /app node:20-alpine \
+                                npx -y snyk-to-html -i ${scanDir}/snyk-report.json -o ${scanDir}/snyk-report.html
+                            """
+                            
+                            if (fileExists("${scanDir}/snyk-report.html")) {
+                                publishHTML([
+                                    allowMissing: true,
+                                    alwaysLinkToLastBuild: true,
+                                    keepAll: true,
+                                    reportDir: "${scanDir}",
+                                    reportFiles: 'snyk-report.html',
+                                    reportName: "Snyk Report (${module})",
+                                    reportTitles: "Security Scan Report - ${module}"
+                                ])
+                            }
+
+                            // In log chi tiết các lỗi Critical
+                            def report = readJSON file: "${scanPath}/snyk-report.json"
+                            def criticalIssues = []
+                            
+                            // Snyk JSON có thể là Object hoặc Array tùy theo mode --all-projects
+                            def vulnerabilities = (report instanceof List) 
+                                ? report.collectMany { it.vulnerabilities ?: [] } 
+                                : (report.vulnerabilities ?: [])
+
+                            criticalIssues = vulnerabilities.findAll { it.severity?.toLowerCase() == 'critical' }
+
+                            if (criticalIssues) {
+                                echo "🔥 [CRITICAL] FOUND ${criticalIssues.size()} CRITICAL VULNERABILITIES IN ${module}:"
+                                criticalIssues.each { issue ->
+                                    echo "   - ID: ${issue.id}"
+                                    echo "     Title: ${issue.title}"
+                                    echo "     Package: ${issue.packageName} (Version: ${issue.version})"
+                                    echo "     Path: ${issue.from?.join(' > ') ?: 'N/A'}"
+                                    echo "     URL: ${issue.references?.getAt(0)?.url ?: 'N/A'}"
+                                    echo "   ---------------------------------------"
+                                }
+                            }
+                        } catch (Exception e) {
+                            echo "[WARN] Error generating/publishing Snyk HTML report: ${e.message}"
+                        }
                     }
 
                     // Xử lý Exit Code của Snyk theo Best-Practice
