@@ -883,7 +883,7 @@ def runCompileAndPackageStage() {
         echo "[INFO] Installing dependencies for frontend: ${module}"
         dir(module) {
             sh """
-                npm ci --prefer-offline --no-audit --loglevel=error
+                docker run --rm -v ${WORKSPACE}/${module}:/app -w /app node:20-alpine npm ci --prefer-offline --no-audit --loglevel=error
             """
         }
     }
@@ -935,7 +935,7 @@ def runUnitTestsStage() {
         echo "[INFO] Running unit tests for frontend: ${module}"
         dir(module) {
             sh """
-                npm test -- --coverage --watchAll=false --passWithNoTests
+                docker run --rm -v ${WORKSPACE}/${module}:/app -w /app node:20-alpine npm test -- --coverage --watchAll=false --passWithNoTests
             """
         }
     }
