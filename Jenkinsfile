@@ -1219,25 +1219,43 @@ def runSnykSecurityScanStage() {
                         }
                     }
 
-                    // Xử lý Exit Code của Snyk theo Best-Practice
-                    if (snykExitCode == 0) {
-                        echo "✅ [SUCCESS] Snyk scan passed! No high-severity vulnerabilities found in ${module} (Exit Code: 0)."
-                    } else if (snykExitCode == 1) {
-                        echo "⚠️ [ACTION NEEDED] Snyk scan completed, but found HIGH-SEVERITY VULNERABILITIES in ${module} (Exit Code: 1)!"
-                        echo "⚠️ Please upgrade the libraries according to Snyk's instructions in the log.."
-                        
-                        if (isPR || env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master') {
-                            error "❌ [POLICY] Strict gate for PR/Main (isPR=${isPR}, BRANCH_NAME=${env.BRANCH_NAME}): A high-risk security vulnerability exists. Hard Gate: Build failed (Exit 1)!"
-                        } else {
-                            echo "⚠️ [POLICY] Feature branch: Only warning (Non-blocking), continue build."
-                        }
-                    } else if (snykExitCode == 2) {
-                        error "Snyk system error (e.g. Token expired, 403 Forbidden, network issues). Hard failing the pipeline."
-                    } else if (snykExitCode == 3) {
-                        echo "ℹ️ [INFO] Snyk did not find any supported projects to scan in ${module} (Exit Code: 3). Skipping."
-                    } else {
-                        error "Snyk scan failed with an unknown error (Exit Code: ${snykExitCode})."
+                    // Xử lý Exit Code của Snyk theo Best-Practice chuẩn ngành
+                    switch(snykExitCode) {
+                        case 0:
+                            echo "✅ [SUCCESS] Snyk scan passed! No high-severity vulnerabilities found in module: ${module}."
+                            break
+                    
+                        case 1:
+                            echo "⚠️ [SECURITY WARNING] Snyk found HIGH-SEVERITY VULNERABILITIES in module: ${module}!"
+                            
+                            // Kiểm tra xem đích đến cuối cùng của code có phải là các nhánh Production không
+                            def isTargetingProd = (isPR && (env.CHANGE_TARGET == 'main' || env.CHANGE_TARGET == 'master')) || 
+                                                  (env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master')
+                    
+                            if (isTargetingProd) {
+                                echo "❌ [POLICY] Tight security gate enforced for PR/Production branches."
+                                echo "👉 ACTION REQUIRED: Please view the Snyk report artifact and upgrade your libraries immediately to fix the issues."
+                                error "❌ [HARD GATE] Pipeline aborted due to security vulnerability compliance violation."
+                            } else {
+                                echo "ℹ️ [POLICY] Feature branch detected. This warning is non-blocking (Continue build). However, please fix these vulnerabilities before opening a PR."
+                            }
+                            break
+                    
+                        case 2:
+                            echo "🔥 [SNYK SYSTEM ERROR] Snyk CLI failed due to environment/network issues (e.g., Token expired, 403 Forbidden, rate limit)."
+                            echo "👉 TIP: Check your SNYK_TOKEN credentials or run the command locally with 'snyk test -d' to view debug logs."
+                            error "❌ [SYSTEM FAILURE] Snyk infrastructure failure. Hard failing the pipeline."
+                            break
+                    
+                        case 3:
+                            echo "ℹ️ [INFO] Snyk did not find any supported package manager files (e.g., package.json, pom.xml) to scan in ${module}. Skipping gracefully."
+                            break
+                    
+                        default:
+                            error "❌ [UNKNOWN ERROR] Snyk scan terminated with an unexpected status code: ${snykExitCode}. Please contact DevOps team."
+                            break
                     }
+
                 }
             }
         } catch (Exception e) {
