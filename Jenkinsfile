@@ -965,12 +965,15 @@ def runUnitTestsStage() {
             ? '/usr/lib/jvm/java-21-amazon-corretto'
             : '/usr/lib/jvm/java-25-amazon-corretto'
 
-        def mvnCmd = "/opt/maven/bin/mvn test -T 1C -pl ${backendModules.join(',')} -am"
+        // ⚠️ -T 1 (not 1C) for unit tests: Surefire forks 1 JVM per module already,
+        // using -T 1C on top causes too many concurrent JVM processes → OOM → SIGTERM 143
+        def mvnCmd = "/opt/maven/bin/mvn test -T 1 -pl ${backendModules.join(',')} -am"
         if (env.COMMON_LIB_CHANGED == 'true') mvnCmd += " -amd"
 
         sh """
             export JAVA_HOME=${javaHome}
             export PATH=${javaHome}/bin:\$PATH
+            export MAVEN_OPTS="-Xmx2g -XX:+UseG1GC"
             ${mvnCmd}
         """
     }
