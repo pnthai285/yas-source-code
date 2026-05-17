@@ -75,7 +75,12 @@ pipeline {
         SLACK_TEAM_DOMAIN   = 'pnt-8oe4827'
         SLACK_CHANNEL       = '#cicd-notifications'
         SLACK_CREDENTIALS_ID = 'slack-bot-token-yas'
-        
+
+        // GitHub API – dùng để phát hiện open PR và abort branch build thừa
+        // Credential 'github-token-yas' type: GitHub App (Jenkins GitHub Branch Source)
+        GITHUB_OWNER = 'pnthai285'
+        GITHUB_REPO  = 'pnthai285/yas-source-code'
+
         // Module lists are set in Smart Routing
     }
 
@@ -716,15 +721,59 @@ def runSmartRoutingStage() {
 
     try {
         env.GIT_COMMIT_SHORT = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : 'unknown'
-        env.BRANCH_NAME = env.BRANCH_NAME?.trim()
+        // rawBranchName giữ tên gốc (có '/') để dùng query GitHub API
+        def rawBranchName = env.BRANCH_NAME?.trim()
             ?: env.CHANGE_BRANCH?.trim()
             ?: (env.GIT_BRANCH ? env.GIT_BRANCH.replaceFirst(/^origin\//, '').trim() : null)
             ?: 'detached'
-        env.BRANCH_NAME = env.BRANCH_NAME.replaceAll('/', '-')
+        env.BRANCH_NAME = rawBranchName.replaceAll('/', '-')
+
+        // ============================================================
+        // "Single Optimal Build per Commit"
+        // ============================================================
+        // Khi branch ĐANG MỞ PR vào main, GitHub bắn 2 webhook (push + pull_request).
+        // Jenkins sẽ kích hoạt cả 2 job: Branch Build + PR Build.
+        // Branch Build lúc này hoàn toàn vô nghĩa — chỉ tốn tài nguyên Spot.
+        // → Nếu đây là Branch Build (không phải PR job) VÀ GitHub API xác nhận
+        //   nhánh này đang có open PR, ta ABORT ngay lập tức để nhường chỗ cho PR Build.
+        if (!isPR && env.BRANCH_NAME != 'main') {
+            try {
+                // GitHub App credential: usernamePassword — username=App ID, password=installation token
+                withCredentials([usernamePassword(credentialsId: 'github-token-yas', usernameVariable: 'GH_APP_ID', passwordVariable: 'GH_TOKEN')]) {
+                    def openPRNumber = sh(
+                        script: """
+                            curl -sf \\
+                                -H "Authorization: token \${GH_TOKEN}" \\
+                                -H "Accept: application/vnd.github.v3+json" \\
+                                "https://api.github.com/repos/${GITHUB_REPO}/pulls?state=open&head=${GITHUB_OWNER}:${rawBranchName}&per_page=1" \\
+                            | python3 -c "import sys,json; prs=json.load(sys.stdin); print(prs[0]['number'] if prs else '')" 2>/dev/null || echo ''
+                        """,
+                        returnStdout: true,
+                        label: 'check-open-pr-for-branch'
+                    ).trim()
+
+                    if (openPRNumber) {
+                        echo "[INFO] 🔴 Branch '${env.BRANCH_NAME}' has open PR #${openPRNumber}."
+                        echo "[INFO] Aborting Branch Build — PR Build #${openPRNumber} is the authoritative CI for this commit."
+                        // ABORTED không gửi Slack failure, không block merge
+                        currentBuild.result = 'ABORTED'
+                        error("Branch build superseded: PR #${openPRNumber} is open. Only PR Build will run (industry best-practice).")
+                    } else {
+                        echo "[INFO] 🟢 No open PR found for branch '${env.BRANCH_NAME}'. Proceeding with Branch Build."
+                    }
+                }
+            } catch (Exception e) {
+                if (currentBuild.result == 'ABORTED') throw e
+                // Nếu GitHub API lỗi (network, token hết hạn...) → tiếp tục build bình thường
+                // Không nên block pipeline chỉ vì không check được PR status
+                echo "[WARN] Could not query GitHub API to check for open PRs: ${e.message}. Proceeding with Branch Build as fallback."
+            }
+        }
+
         // Fetch target branch để có merge base chính xác
         sh "git fetch origin ${CHANGE_TARGET}:refs/remotes/origin/${CHANGE_TARGET} --depth=50"
 
-        // ✅ BEST-PRACTICE CHUẨN NGÀNH (PUSH vs PR)
+        // (PUSH vs PR)
         def diffScript = ""
         if (isPR) {
             echo "[INFO] Smart Routing Mode: Pull Request (3-dot diff from origin/${CHANGE_TARGET})"
