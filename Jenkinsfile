@@ -699,9 +699,6 @@ def retryWithBackoff(int maxAttempts, int baseDelaySeconds, Closure closure) {
  * Run a stage with fail-fast for PR and continue-on-failure for branch builds.
  */
 def runStageOrWarn(String stageName, Closure body) {
-    if (this.binding?.hasVariable('buildErrors') == false) {
-        this.binding.setVariable('buildErrors', [])
-    }
     if (isPR) {
         body()
     } else {

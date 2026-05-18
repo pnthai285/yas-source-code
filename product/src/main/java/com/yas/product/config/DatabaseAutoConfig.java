@@ -14,7 +14,6 @@ import org.springframework.security.core.context.SecurityContextHolder;
 @EnableJpaRepositories("com.yas.product.repository")
 @EntityScan({"com.yas.product.model", "com.yas.product.model.attribute"})
 @EnableJpaAuditing(auditorAwareRef = "auditorAware")
-
 public class DatabaseAutoConfig {
 
     @Bean
