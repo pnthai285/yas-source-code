@@ -5,9 +5,11 @@
 // Best-Practices: Retry at Master, Smart Routing, Maven Reactor, Graceful Error Handling
 // ============================================================
 
-def isPR = false
-def maxInfraRetry = 1
-def buildErrors = []
+import groovy.transform.Field
+
+@Field boolean isPR = false
+@Field int maxInfraRetry = 1
+@Field List<String> buildErrors = []
 
 pipeline {
     // ============================================================
