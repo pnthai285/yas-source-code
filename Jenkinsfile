@@ -142,8 +142,8 @@ pipeline {
                             echo "[INFO] === CHECKOUT & SETUP STARTED ==="
                             
                             try {
-                                checkout scm
-                                resolveCommitInfo()
+                                def scmVars = checkout scm
+                                resolveCommitInfo(scmVars)
                                 
                                 // Lấy AWS config với error handling
                                 env.ACCOUNT_ID = withAWS(region: 'us-east-1') {
@@ -1338,8 +1338,8 @@ def runSnykSecurityScanStage() {
     }
 }
 
-def resolveCommitInfo() {
-    def fullCommit = env.GIT_COMMIT?.trim()
+def resolveCommitInfo(Map scmVars = null, boolean failIfUnknown = false) {
+    def fullCommit = scmVars?.GIT_COMMIT?.trim() ?: env.GIT_COMMIT?.trim()
     if (!fullCommit) {
         fullCommit = sh(
             script: "git rev-parse HEAD 2>/dev/null || true",
@@ -1351,7 +1351,7 @@ def resolveCommitInfo() {
         env.GIT_COMMIT = fullCommit
     }
 
-    def shortCommit = env.GIT_COMMIT_SHORT?.trim()
+    def shortCommit = (fullCommit?.length() >= 7) ? fullCommit.take(7) : env.GIT_COMMIT_SHORT?.trim()
     if (!shortCommit || shortCommit == 'unknown' || !shortCommit.matches(/^[a-fA-F0-9]{7}$/)) {
         shortCommit = sh(
             script: "git rev-parse --short=7 HEAD 2>/dev/null || true",
@@ -1361,13 +1361,13 @@ def resolveCommitInfo() {
     }
     env.GIT_COMMIT_SHORT = (shortCommit?.matches(/^[a-fA-F0-9]{7}$/)) ? shortCommit.toLowerCase() : 'unknown'
 
-    if (env.GIT_COMMIT_SHORT == 'unknown') {
+    if (failIfUnknown && env.GIT_COMMIT_SHORT == 'unknown') {
         error "Cannot determine valid commit SHA for image tagging. Ensure checkout completed and git metadata is available."
     }
 }
 
 def runBuildAndPushStage() {
-    resolveCommitInfo()
+    resolveCommitInfo(null, true)
     def modules = env.AFFECTED_MODULES ? env.AFFECTED_MODULES.split(',').findAll { it } : []
 
     modules.each { module ->
